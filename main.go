@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -12,7 +11,7 @@ import (
 func handler(w http.ResponseWriter, r *http.Request) {
 	log.Println("Received request:", r.URL)
 
-	// Parse query params
+	// Extract control params from query string
 	q := r.URL.Query()
 	forwardURL := q.Get("forward_url")
 	apiKey := q.Get("api_key")
@@ -22,9 +21,18 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Remove control params so we can forward the rest
-	q.Del("forward_url")
-	q.Del("api_key")
+	// Parse form values from request body (POST form)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "failed to parse form: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Remove control params from form in case they exist there
+	r.Form.Del("forward_url")
+	r.Form.Del("api_key")
+
+	// Encode form values for POST
+	formData := r.Form.Encode()
 
 	// Parse and validate forward_url
 	target, err := url.Parse(forwardURL)
@@ -33,28 +41,21 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Append remaining query parameters to the target URL
-	target.RawQuery = q.Encode()
+	log.Printf("Forwarding POST request to %s with form data: %s", forwardURL, formData)
 
-	// Prepare log of remaining query params
-	var params []string
-	for k, vs := range q {
-		params = append(params, fmt.Sprintf("%s=%s", k, strings.Join(vs, ",")))
-	}
-
-	log.Printf("Forwarding request to %s with query params: %s", forwardURL, strings.Join(params, "&"))
-
-	// Forward the request
-	req, err := http.NewRequest(http.MethodGet, target.String(), nil)
+	// Create POST request
+	req, err := http.NewRequest(http.MethodPost, target.String(), strings.NewReader(formData))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Set headers
+	// Copy original headers, add API key, and set content type
 	req.Header = r.Header.Clone()
 	req.Header.Set("X-Flyt-API-Key", apiKey)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
+	// Send the request
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
